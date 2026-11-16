@@ -1,0 +1,14 @@
+/http-api
+/main
+*.exe
+*.test
+*.out
+
+# Локальные файлы окружения Go и секреты
+go.work
+go.work.sum
+.env
+
+# Логи и системный мусор
+*.log
+.DS_Store
