@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,24 +20,14 @@ func NewItemRepository(pool *pgxpool.Pool) *ItemRepository {
 
 func (ir *ItemRepository) CreateItem(ctx context.Context, name string, price int) (Item, error) {
 	query := "INSERT INTO items (name, price) VALUES ($1, $2) RETURNING id, name, price, created_at"
-	var (
-		r_id         int
-		r_name       string
-		r_price      int
-		r_created_at time.Time
-	)
-	err := ir.pool.QueryRow(ctx, query, name, price).Scan(&r_id, &r_name, &r_price, &r_created_at)
+	var item Item
+	err := ir.pool.QueryRow(ctx, query, name, price).Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt)
 
 	if err != nil {
 		return Item{}, fmt.Errorf("error in CreateItem: %w", err)
 	}
 
-	return Item{
-		ID:        r_id,
-		Name:      r_name,
-		Price:     r_price,
-		CreatedAt: r_created_at,
-	}, err
+	return item, err
 }
 
 func (ir *ItemRepository) List(ctx context.Context) ([]Item, error) {
@@ -50,27 +40,53 @@ func (ir *ItemRepository) List(ctx context.Context) ([]Item, error) {
 
 	defer rows.Close()
 
-	var (
-		r_id         int
-		r_name       string
-		r_price      int
-		r_created_at time.Time
-	)
+	var item Item
 	for rows.Next() {
-		err := rows.Scan(&r_id, &r_name, &r_price, &r_created_at)
+		err := rows.Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt)
 		if err != nil {
 			return []Item{}, fmt.Errorf("error while scan: %w", err)
 		}
-		itemSlice = append(itemSlice, Item{
-			ID:        r_id,
-			Name:      r_name,
-			Price:     r_price,
-			CreatedAt: r_created_at,
-		})
+		itemSlice = append(itemSlice, item)
 	}
 	if err := rows.Err(); err != nil {
 		return []Item{}, fmt.Errorf("error in rows: %w", err)
 	}
 
 	return itemSlice, nil
+}
+
+func (ir *ItemRepository) GetByID(ctx context.Context, id int) (Item, error) {
+	query := "SELECT id, name, price, created_at FROM items WHERE id=$1"
+	var item Item
+
+	row := ir.pool.QueryRow(ctx, query, id)
+	err := row.Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt)
+	if err != nil {
+		return Item{}, fmt.Errorf("error while scaning row in GetByID: %w", err)
+	}
+	return item, nil
+}
+
+func (ir *ItemRepository) Update(ctx context.Context, id int, name string, price int) (Item, error) {
+	query := "UPDATE items SET name=$1, price=$2 WHERE id=$3 RETURNING id, name, price, created_at"
+	var item Item
+	row := ir.pool.QueryRow(ctx, query, name, price, id)
+	err := row.Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt)
+	if err != nil {
+		return Item{}, fmt.Errorf("error while scanning row in Update: %w", err)
+	}
+	return item, nil
+}
+
+func (ir *ItemRepository) Delete(ctx context.Context, id int) error {
+	query := "DELETE FROM items WHERE id=$1"
+
+	tag, err := ir.pool.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("error while deleting in Delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }

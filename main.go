@@ -9,14 +9,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
-var repository *ItemRepository
+type ItemHandler struct {
+	repository *ItemRepository
+}
+
+func NewItemHandler(repo *ItemRepository) *ItemHandler {
+	return &ItemHandler{
+		repository: repo,
+	}
+}
 
 type Item struct {
 	ID        int       `json:"id"`
@@ -25,69 +36,202 @@ type Item struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
-		slog.Error("error in handleHealth", "err", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("headers set")
-
+type itemRequest struct {
+	Name  string `json:"name"`
+	Price int    `json:"price"`
 }
 
-func handleCreateItem(w http.ResponseWriter, r *http.Request) {
-	var newItem Item
-	if err := json.NewDecoder(r.Body).Decode(&newItem); err != nil {
+func (h *ItemHandler) handleCreateItem(w http.ResponseWriter, r *http.Request) {
+	var newItemRequest itemRequest
+	if err := json.NewDecoder(r.Body).Decode(&newItemRequest); err != nil {
 		slog.Error("error in handleCreateItem while decoding request", "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	if strings.TrimSpace(newItemRequest.Name) == "" || newItemRequest.Price <= 0 {
+		slog.Error("item name or/and price are not valid in handleCreateItem", slog.Any("itemRequest", newItemRequest))
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	item, err := repository.CreateItem(ctx, newItem.Name, newItem.Price)
+	item, err := h.repository.CreateItem(ctx, newItemRequest.Name, newItemRequest.Price)
 	if err != nil {
 		slog.Error("failed to create item", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	slog.Info("headers set")
-	//TODO подумать над кодированием json предварительно, а затем если ошибок нет вызывать w.WriteHeader и писать в буфер w
-	if err := json.NewEncoder(w).Encode(item); err != nil {
-		slog.Error("error in handleCreateItem while encoding response", "err", err)
-		//http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	writeJSON(w, http.StatusCreated, item)
+
+	// payload, err := json.Marshal(item)
+	// if err != nil {
+	// 	slog.Error("error while serilization object in handleGetItems", slog.Any("error", err))
+	// 	http.Error(w, "internal server error", http.StatusInternalServerError)
+	// 	return
+	// }
+	// w.Header().Set("Content-Type", "application/json")
+	// w.WriteHeader(http.StatusCreated)
+	// slog.Info("headers set")
+	// _, _ = w.Write(payload)
+	// //TODO подумать над кодированием json предварительно, а затем если ошибок нет вызывать w.WriteHeader и писать в буфер w
+	// if err := json.NewEncoder(w).Encode(item); err != nil {
+	// 	slog.Error("error in handleCreateItem while encoding response", "err", err)
+	// 	//http.Error(w, err.Error(), http.StatusInternalServerError)
+	// 	return
+	// }
 
 }
 
-func handleGetItems(w http.ResponseWriter, r *http.Request) {
+func (h *ItemHandler) handleGetItems(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	itemSlice, err := repository.List(ctx)
+	itemSlice, err := h.repository.List(ctx)
 	if err != nil {
 		slog.Error("failed to get items", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	slog.Info("headers set")
+	writeJSON(w, http.StatusOK, itemSlice)
 
-	if err := json.NewEncoder(w).Encode(itemSlice); err != nil {
-		slog.Error("error in handleGetItems while encoding response", "err", err)
-		//TODO подумать над кодированием json предварительно, а затем если ошибок нет вызывать w.WriteHeader и писать в буфер w
-		//http.Error(w, err.Error(), http.StatusInternalServerError)
+	// payload, err := json.Marshal(itemSlice)
+	// if err != nil {
+	// 	slog.Error("error while serilization object in handleGetItems", slog.Any("error", err))
+	// 	http.Error(w, "internal server error", http.StatusInternalServerError)
+	// 	return
+	// }
+	// w.Header().Set("Content-Type", "application/json")
+	// w.WriteHeader(http.StatusOK)
+	// slog.Info("headers set")
+	// _, _ = w.Write(payload)
+
+}
+
+func (h *ItemHandler) handleGetByID(w http.ResponseWriter, r *http.Request) {
+
+	reqId, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		slog.Error("failed to parse id in handleGetById", slog.Any("error", err))
+		http.Error(w, "BadRequest", http.StatusBadRequest)
+		return
+	}
+	if reqId <= 0 {
+		slog.Error("passed incorrect id in handleGetByID", slog.Any("id", reqId))
+		http.Error(w, "BadRequest", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	item, err := h.repository.GetByID(ctx, reqId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("item not found in handleGetByID", slog.Any("error", err))
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("error while getting item from repo in handleGetByID", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+	// payload, err := json.Marshal(item)
+	// if err != nil {
+	// 	slog.Error("error while serilization object in handleGetByID", slog.Any("error", err))
+	// 	http.Error(w, "internal server error", http.StatusInternalServerError)
+	// 	return
+	// }
+	// w.Header().Set("Content-Type", "application/json")
+	// w.WriteHeader(http.StatusOK)
+	// slog.Info("headers set")
+	// _, _ = w.Write(payload)
+}
+
+func (h *ItemHandler) handleUpdateByID(w http.ResponseWriter, r *http.Request) {
+
+	var updateItemRequest itemRequest
+
+	reqId, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		slog.Error("failed to parse id in handleUpdateByID")
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if reqId <= 0 {
+		slog.Error("passed incorrect id in handleUpdateByID", slog.Any("id", reqId))
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
+	if err := json.NewDecoder(r.Body).Decode(&updateItemRequest); err != nil {
+		slog.Error("error in handleUpdateByID while decoding request", "err", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(updateItemRequest.Name) == "" || updateItemRequest.Price <= 0 {
+		slog.Error("item name or/and price are not valid in handleUpdateByID", slog.Any("itemRequest", updateItemRequest))
+		http.Error(w, "Bad request:", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	updatedItem, err := h.repository.Update(ctx, reqId, updateItemRequest.Name, updateItemRequest.Price)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("item not found handleUpdateByID", slog.Any("error", err))
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("error while updating item in handleUpdateByID", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, updatedItem)
+
+	// payload, err := json.Marshal(updatedItem)
+	// if err != nil {
+	// 	slog.Error("error while serilization object in handleUpdateByID", slog.Any("error", err))
+	// 	http.Error(w, "internal server error", http.StatusInternalServerError)
+	// 	return
+	// }
+	// w.Header().Set("Content-Type", "application/json")
+	// w.WriteHeader(http.StatusOK)
+	// slog.Info("headers set")
+	// _, _ = w.Write(payload)
+
+}
+
+func (h *ItemHandler) handleDeleteByID(w http.ResponseWriter, r *http.Request) {
+	reqId, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		slog.Error("failed to parse id in handleDeleteByID", slog.Any("error", err))
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if reqId <= 0 {
+		slog.Error("passed incorrect id in handleDeleteByID", slog.Any("id", reqId))
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	err = h.repository.Delete(ctx, reqId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("item not found in handleDeleteByID", slog.Any("error", err))
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("error while getting item from repo in handleDeleteByID", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func newDBpool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
@@ -118,6 +262,19 @@ func newDBpool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 }
 
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		slog.Error("failed to marshal response", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(payload); err != nil {
+		slog.Error("failed to write response", slog.Any("error", err))
+	}
+}
 func main() {
 	//logger setup
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -139,7 +296,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	repository = NewItemRepository(pool)
+	itemHandler := NewItemHandler(NewItemRepository(pool))
 
 	//server setup
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -147,9 +304,15 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", handleHealth)
-	mux.HandleFunc("POST /items", handleCreateItem)
-	mux.HandleFunc("GET /items", handleGetItems)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("POST /items", itemHandler.handleCreateItem)
+	mux.HandleFunc("GET /items", itemHandler.handleGetItems)
+	mux.HandleFunc("GET /items/{id}", itemHandler.handleGetByID)
+	mux.HandleFunc("DELETE /items/{id}", itemHandler.handleDeleteByID)
+	mux.HandleFunc("PUT /items/{id}", itemHandler.handleUpdateByID)
 
 	server := http.Server{
 		Addr:              ":8080",
@@ -157,7 +320,7 @@ func main() {
 		ReadTimeout:       5 * time.Second,
 		//WriteTimeout: 10*time.Second, deprecated, replaced by http.TimeoutHandler
 		IdleTimeout: 15 * time.Second,
-		Handler:     http.TimeoutHandler(mux, 10*time.Second, "Unavalible"),
+		Handler:     http.TimeoutHandler(mux, 10*time.Second, "Unavailable"),
 	}
 
 	go func() {
