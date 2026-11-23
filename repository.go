@@ -18,10 +18,10 @@ func NewItemRepository(pool *pgxpool.Pool) *ItemRepository {
 	}
 }
 
-func (ir *ItemRepository) CreateItem(ctx context.Context, name string, price int) (Item, error) {
-	query := "INSERT INTO items (name, price) VALUES ($1, $2) RETURNING id, name, price, created_at"
+func (ir *ItemRepository) CreateItem(ctx context.Context, name string, price int, stock int) (Item, error) {
+	query := "INSERT INTO items (name, price, stock) VALUES ($1, $2, $3) RETURNING id, name, price, created_at, stock"
 	var item Item
-	err := ir.pool.QueryRow(ctx, query, name, price).Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt)
+	err := ir.pool.QueryRow(ctx, query, name, price, stock).Scan(&item.ID, &item.Name, &item.Price, &item.CreatedAt, &item.Stock)
 
 	if err != nil {
 		return Item{}, fmt.Errorf("error in CreateItem: %w", err)
@@ -49,7 +49,7 @@ func (ir *ItemRepository) List(ctx context.Context) ([]Item, error) {
 		itemSlice = append(itemSlice, item)
 	}
 	if err := rows.Err(); err != nil {
-		return []Item{}, fmt.Errorf("error in rows: %w", err)
+		return nil, fmt.Errorf("error in rows: %w", err)
 	}
 
 	return itemSlice, nil

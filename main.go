@@ -34,11 +34,13 @@ type Item struct {
 	Name      string    `json:"name"`
 	Price     int       `json:"price"`
 	CreatedAt time.Time `json:"created_at"`
+	Stock     int       `json:"stock"`
 }
 
 type itemRequest struct {
 	Name  string `json:"name"`
 	Price int    `json:"price"`
+	Stock int    `json:"stock"`
 }
 
 func (h *ItemHandler) handleCreateItem(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +59,7 @@ func (h *ItemHandler) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	item, err := h.repository.CreateItem(ctx, newItemRequest.Name, newItemRequest.Price)
+	item, err := h.repository.CreateItem(ctx, newItemRequest.Name, newItemRequest.Price, newItemRequest.Stock)
 	if err != nil {
 		slog.Error("failed to create item", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
